@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 test('group high-risk by department', async ({ page, request }) => {
-  const appBase = process.env.APP_URL || 'http://localhost:3000'
+  const appBase = process.env.APP_URL || 'http://127.0.0.1:3000'
   // enable test mode so frontend uses non-streaming JSON endpoint
   await page.addInitScript(() => {
     window.__TEST_MODE__ = true

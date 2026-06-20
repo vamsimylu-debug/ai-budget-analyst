@@ -56,10 +56,10 @@ jobs:
       - name: Start frontend server and run Playwright tests
         working-directory: frontend
         run: |
-          nohup npm run dev -- --hostname 0.0.0.0 --port 3000 > ../frontend.log 2>&1 &
-          for i in {1..60}; do curl -fsS http://localhost:8000/api/scenarios/ && break; sleep 2; done
-          for i in {1..90}; do curl -fsS http://localhost:3000 && break; sleep 2; done
-          APP_URL=http://localhost:3000 npm run test:e2e
+          NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000 nohup npm run dev -- --hostname 0.0.0.0 --port 3000 > ../frontend.log 2>&1 &
+          for i in {1..60}; do curl -fsS http://127.0.0.1:8000/api/scenarios/ && break; sleep 2; done
+          for i in {1..90}; do curl -fsS http://127.0.0.1:3000 && break; sleep 2; done
+          APP_URL=http://127.0.0.1:3000 BACKEND_URL=http://127.0.0.1:8000 npm run test:e2e
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
