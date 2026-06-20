@@ -4,16 +4,26 @@ import re
 from django.http import StreamingHttpResponse
 from rest_framework import viewsets, status
 from rest_framework.decorators import api_view
+from rest_framework.decorators import renderer_classes
 from rest_framework.response import Response
+from rest_framework.renderers import BaseRenderer, JSONRenderer
 from .models import BudgetScenario, BudgetLineItem
 from .serializers import BudgetScenarioSerializer, BudgetLineItemSerializer
-
 try:
     import openai
 except ImportError:
     openai = None
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+
+
+class ServerSentEventRenderer(BaseRenderer):
+    media_type = 'text/event-stream'
+    format = 'event-stream'
+    charset = None
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return data
 
 class BudgetScenarioViewSet(viewsets.ModelViewSet):
     queryset = BudgetScenario.objects.all().order_by('-created_at')
@@ -237,28 +247,46 @@ def sse_event(event_name, payload):
 
 
 @api_view(['GET', 'POST'])
+@renderer_classes([JSONRenderer, ServerSentEventRenderer])
 def scenario_chat(request, scenario_id):
     scenario = BudgetScenario.objects.filter(id=scenario_id).first()
     if not scenario:
         return Response({'detail': 'Scenario not found.'}, status=status.HTTP_404_NOT_FOUND)
-    question = request.GET.get('question', '').strip() or request.data.get('question', '').strip()
+
+    question = (
+        request.GET.get('question', '').strip()
+        or request.data.get('question', '').strip()
+    )
+
     if not question:
         return Response({'detail': 'Question is required.'}, status=status.HTTP_400_BAD_REQUEST)
 
     analysis = scenario_analysis_text(scenario, question)
     analysis['text'] = build_ai_answer(scenario, question, analysis)
 
-    # Support test-mode non-streaming JSON responses for deterministic E2E tests
     stream_param = request.GET.get('stream', '1').lower()
+
+    # ✅ Non-streaming JSON mode (tests / fallback)
     if stream_param in ('0', 'false'):
         return Response(analysis)
 
     def event_stream():
         yield sse_event('message', {'text': analysis['text']})
+
         if analysis.get('table') is not None:
             yield sse_event('table', analysis['table'])
+
         if analysis.get('summary') is not None:
             yield sse_event('summary', analysis['summary'])
+
         yield sse_event('done', {})
 
-    return StreamingHttpResponse(event_stream(), content_type='text/event-stream')
+    # ✅ Streaming response
+    response = StreamingHttpResponse(
+        event_stream(),
+        content_type='text/event-stream'
+    )
+
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'  # important for Nginx
+    return response

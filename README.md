@@ -2,6 +2,11 @@
 
 A small full-stack budget review workspace with a Django REST backend, a Next.js frontend, and an AI assistant that analyzes saved budget scenarios.
 
+## Submission
+- Repository name: ai-budget-analyst
+- Repository URL: https://github.com/vamsimylu-debug/ai-budget-analyst
+- Recommended reviewer startup: docker compose up
+
 ## What I built
 - Budget scenario and line item CRUD with Django REST Framework
 - AI assistant chat interface backed by a scenario-aware backend workflow
@@ -31,6 +36,13 @@ npm run dev
 - `OPENAI_API_KEY` (optional) — if omitted, the app falls back to deterministic scenario analysis so the assistant still works for demo queries.
 - `DJANGO_SECRET_KEY` — optional; defaults are provided for local development.
 
+## AI/agent approach and why
+- Approach: hybrid assistant orchestration in the backend.
+- First, deterministic analysis (`scenario_analysis_text`) computes finance-safe structured outputs from application data.
+- Then, optional LLM text generation (`build_ai_answer`) rewrites that into concise natural language when `OPENAI_API_KEY` is present.
+- Why this approach: predictable and testable financial calculations, with optional LLM fluency layered on top.
+- If no API key is configured, the app still works with deterministic answers and structured table/summary outputs.
+
 ## Demo chat query
 Use this exact query in the AI chat input or curl to reproduce the high-risk grouping example used in tests:
 
@@ -59,10 +71,13 @@ The suite includes a lightweight API-level SSE test that validates the grouping 
 ## GitHub Actions CI
 A GitHub Actions workflow is included to run backend Django tests and frontend Playwright E2E tests on push and pull requests.
 
-## Architecture and trade-offs
-- Backend: Django + DRF, SQLite, simple budget line model, SSE chat endpoint.
-- Frontend: Next.js + TypeScript, one page with scenario management and assistant chat.
-- AI: OpenAI ChatCompletion is used when an API key is available; otherwise, the backend falls back to deterministic data-driven results.
+## Main architecture and trade-offs
+- Backend: Django + DRF with model/serializer/view separation, SQLite persistence, and an SSE chat endpoint for incremental UI updates.
+- Frontend: Next.js + TypeScript single-page workflow for scenario CRUD and assistant chat.
+- AI orchestration: deterministic budget analysis + optional OpenAI response generation.
+- Trade-off: orchestration lives in `views.py` for speed in a time-boxed challenge (faster iteration, less abstraction).
+- Trade-off: SQLite and no auth for simpler local review setup.
+- Trade-off: in-memory chat state for reduced complexity; no persisted conversation history.
 
 ## Assumptions / limitations
 - No authentication or multi-user handling.
@@ -74,3 +89,10 @@ A GitHub Actions workflow is included to run backend Django tests and frontend P
 - Support richer chart widgets and drag-to-adjust budget scenarios.
 - Add better validation and inline editing for line items.
 - Add production-ready static build and nginx proxy.
+
+## Reviewer checklist mapping
+- One-command startup: `docker compose up`
+- Seeded demo data: `backend/api/management/commands/seed_demo_data.py`
+- Backend tests: `backend/api/tests.py`
+- Frontend tests: `frontend/tests/e2e.spec.ts`, `frontend/tests/api.spec.ts`
+- SSE chat flow: `backend/api/views.py` (`scenario_chat`) and `frontend/src/app/page.tsx` (`EventSource` + fallback)

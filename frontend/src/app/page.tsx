@@ -29,6 +29,33 @@ type Scenario = {
 
 type ChatEvent = { type: 'user' | 'assistant' | 'table' | 'summary' | 'error'; payload: any }
 
+const isTrivialSummary = (summary: any) => {
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return false
+  const keys = Object.keys(summary)
+  return keys.length === 1 && keys[0] === 'item_count'
+}
+
+const formatColumnLabel = (key: string) => {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+const formatCellValue = (value: any) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value.toLocaleString()
+  }
+  return String(value)
+}
+
+const cleanAssistantText = (text: string) => {
+  const normalized = (text || '').replace(/\r/g, '')
+  const withoutFences = normalized.replace(/```[\s\S]*?```/g, '')
+  const withoutSections = withoutFences.replace(/\n#{1,6}\s*(Table|Summary)[\s\S]*$/i, '')
+  const cleaned = withoutSections.trim()
+  return cleaned || 'Here are the results in the table below.'
+}
+
 type LineItemForm = {
   department: string
   category: string
@@ -71,9 +98,12 @@ export default function Home() {
     const handler = (e: any) => {
       const data = e.detail
       if (!data) return
-      setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${data.text || 'No response returned.'}` }])
+      const text = cleanAssistantText(data.text || 'No response returned.')
+      setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${text}` }])
       if (data.table) setChat(prev => [...prev, { type: 'table', payload: data.table }])
-      if (data.summary) setChat(prev => [...prev, { type: 'summary', payload: data.summary }])
+      if (data.summary && !isTrivialSummary(data.summary)) {
+        setChat(prev => [...prev, { type: 'summary', payload: data.summary }])
+      }
     }
     window.addEventListener('playwright-inject', handler as EventListener)
     // expose a direct injector for Playwright tests to call synchronously
@@ -172,9 +202,12 @@ export default function Home() {
         const resp = await fetch(url + '&stream=0')
         if (!resp.ok) throw new Error('Chat failed')
         const data = await resp.json()
-        setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${data.text || 'No response returned.'}` }])
+        const text = cleanAssistantText(data.text || 'No response returned.')
+        setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${text}` }])
         if (data.table) setChat(prev => [...prev, { type: 'table', payload: data.table }])
-        if (data.summary) setChat(prev => [...prev, { type: 'summary', payload: data.summary }])
+        if (data.summary && !isTrivialSummary(data.summary)) {
+          setChat(prev => [...prev, { type: 'summary', payload: data.summary }])
+        }
       } catch (err) {
         setChat(prev => [...prev, { type: 'error', payload: 'Chat failed. Please try again.' }])
       } finally {
@@ -184,13 +217,17 @@ export default function Home() {
     }
 
     const source = new EventSource(url)
+    let completed = false
+    let fallbackAttempted = false
 
     source.onmessage = event => {
       try {
         const data = JSON.parse(event.data)
-        setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${data.text}` }])
+        const text = cleanAssistantText(data.text || '')
+        setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${text}` }])
       } catch {
-        setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${event.data}` }])
+        const text = cleanAssistantText(event.data || '')
+        setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${text}` }])
       }
     }
 
@@ -204,35 +241,67 @@ export default function Home() {
 
     source.addEventListener('summary', event => {
       try {
-        setChat(prev => [...prev, { type: 'summary', payload: JSON.parse(event.data) }])
+        const payload = JSON.parse(event.data)
+        if (!isTrivialSummary(payload)) {
+          setChat(prev => [...prev, { type: 'summary', payload }])
+        }
       } catch {
         setChat(prev => [...prev, { type: 'error', payload: 'Failed to parse summary data.' }])
       }
     })
 
     source.addEventListener('done', () => {
+      completed = true
       setIsChatting(false)
       source.close()
     })
 
-    source.onerror = () => {
-      setIsChatting(false)
-      setChat(prev => [...prev, { type: 'error', payload: 'Chat stream failed. Please try again.' }])
-      source.close()
+    source.onerror = async () => {
+      // Some environments/proxies terminate SSE in a way that triggers onerror.
+      // Fall back to one-shot JSON mode before showing a failure.
+      if (completed) {
+        source.close()
+        return
+      }
+
+      if (fallbackAttempted) {
+        setIsChatting(false)
+        setChat(prev => [...prev, { type: 'error', payload: 'Chat stream failed. Please try again.' }])
+        source.close()
+        return
+      }
+
+      fallbackAttempted = true
+      try {
+        const resp = await fetch(url + '&stream=0')
+        if (!resp.ok) throw new Error('Chat fallback failed')
+        const data = await resp.json()
+        const text = cleanAssistantText(data.text || 'No response returned.')
+        setChat(prev => [...prev, { type: 'assistant', payload: `Assistant: ${text}` }])
+        if (data.table) setChat(prev => [...prev, { type: 'table', payload: data.table }])
+        if (data.summary && !isTrivialSummary(data.summary)) {
+          setChat(prev => [...prev, { type: 'summary', payload: data.summary }])
+        }
+      } catch {
+        setChat(prev => [...prev, { type: 'error', payload: 'Chat stream failed. Please try again.' }])
+      } finally {
+        setIsChatting(false)
+        source.close()
+      }
     }
   }
 
   const renderChatMessage = (event: ChatEvent, index: number) => {
     if (event.type === 'table') {
       return (
-        <div key={index} className="result-card">
-          <h4>Table</h4>
+        <div key={index} className="result-card table-card">
+          <h4>Over-Budget Line Items</h4>
           <div className="table-scroll">
-            <table>
+            <table className="result-table">
               <thead>
                 <tr>
                   {Object.keys(event.payload[0] || {}).map(key => (
-                    <th key={key}>{key}</th>
+                    <th key={key}>{formatColumnLabel(key)}</th>
                   ))}
                 </tr>
               </thead>
@@ -240,7 +309,7 @@ export default function Home() {
                 {event.payload.map((row: any, rowIndex: number) => (
                   <tr key={rowIndex}>
                     {Object.values(row).map((value, colIndex) => (
-                      <td key={colIndex}>{String(value)}</td>
+                      <td key={colIndex}>{formatCellValue(value)}</td>
                     ))}
                   </tr>
                 ))}
@@ -252,6 +321,9 @@ export default function Home() {
     }
 
     if (event.type === 'summary') {
+      if (isTrivialSummary(event.payload)) {
+        return null
+      }
       return (
         <div key={index} className="result-card">
           <h4>Summary</h4>
@@ -401,6 +473,50 @@ export default function Home() {
         .danger { background: #ffe8e8; border-color: #ff8a8a; }
         .secondary { background: #f4f5f8; }
         .result-card { background: #f9fbff; border: 1px solid #dfe7ff; border-radius: 10px; padding: 12px; margin: 8px 0; }
+        .table-card {
+          background: linear-gradient(145deg, #f6fbff 0%, #eef4ff 100%);
+          border: 1px solid #cddcff;
+          box-shadow: 0 8px 24px rgba(30, 86, 180, 0.08);
+        }
+        .table-card h4 {
+          margin: 0 0 10px;
+          color: #1f3a75;
+          letter-spacing: 0.2px;
+        }
+        .result-table {
+          width: 100%;
+          border-collapse: separate;
+          border-spacing: 0;
+          overflow: hidden;
+          border: 1px solid #d7e3ff;
+          border-radius: 10px;
+          background: #ffffff;
+        }
+        .result-table th {
+          background: #e8f0ff;
+          color: #21407d;
+          font-size: 0.85rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          border-bottom: 1px solid #c8d8ff;
+        }
+        .result-table td {
+          color: #1f2937;
+          background: #ffffff;
+          border-bottom: 1px solid #edf2ff;
+        }
+        .result-table tr:nth-child(even) td {
+          background: #f8fbff;
+        }
+        .result-table tr:hover td {
+          background: #eef5ff;
+        }
+        .result-table th, .result-table td {
+          padding: 10px 12px;
+          text-align: left;
+          white-space: nowrap;
+        }
       `}</style>
     </main>
   )
